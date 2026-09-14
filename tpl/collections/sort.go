@@ -20,8 +20,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/gohugoio/hugo/common/hmaps"
 	"github.com/gohugoio/hugo/common/hreflect"
-	"github.com/gohugoio/hugo/common/maps"
 	"github.com/gohugoio/hugo/langs"
 	"github.com/gohugoio/hugo/tpl/compare"
 	"github.com/spf13/cast"
@@ -50,11 +50,11 @@ func (ns *Namespace) Sort(ctx context.Context, l any, args ...any) (any, error) 
 		return nil, errors.New("can't sort " + reflect.ValueOf(l).Type().String())
 	}
 
-	collator := langs.GetCollator1(ns.deps.Conf.Language())
+	collator := langs.GetCollator1(ns.deps.Conf.Language().(*langs.Language))
 
 	// Create a list of pairs that will be used to do the sort
-	p := pairList{Collator: collator, sortComp: ns.sortComp, SortAsc: true, SliceType: sliceType}
-	p.Pairs = make([]pair, seqv.Len())
+	p := pairList{Collator: collator, sortComp: ns.sortComp, SortAsc: true, SliceType: sliceType,
+		Pairs: make([]pair, seqv.Len())}
 
 	var sortByField string
 	for i, l := range args {
@@ -90,7 +90,7 @@ func (ns *Namespace) Sort(ctx context.Context, l any, args ...any) (any, error) 
 						continue
 					}
 					// Special handling of lower cased maps.
-					if params, ok := v.Interface().(maps.Params); ok {
+					if params, ok := v.Interface().(hmaps.Params); ok {
 						v = reflect.ValueOf(params.GetNested(path[i+1:]...))
 						break
 					}
@@ -122,8 +122,8 @@ func (ns *Namespace) Sort(ctx context.Context, l any, args ...any) (any, error) 
 					if !v.IsValid() {
 						continue
 					}
-					// Special handling of lower cased maps.
-					if params, ok := v.Interface().(maps.Params); ok {
+					// Special handling of lower cased hmaps.
+					if params, ok := v.Interface().(hmaps.Params); ok {
 						v = reflect.ValueOf(params.GetNested(path[j+1:]...))
 						break
 					}

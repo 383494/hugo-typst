@@ -11,7 +11,7 @@ params:
 
 With this content structure:
 
-```text
+```tree
 content/
 ├── auctions/
 │   ├── 2023-11/
@@ -28,7 +28,7 @@ content/
 └── _index.md
 ```
 
-When rendering the "auctions" page:
+When rendering the `auctions` page:
 
 ```go-html-template
 {{ with .Site.GetPage "/" }}
@@ -48,7 +48,7 @@ When rendering the "auctions" page:
 {{ end }}
 ```
 
-In the examples above we are coding defensively using the [`with`] statement, returning nothing if the page does not exist. By adding an [`else`] clause we can do some error reporting:
+In the examples above we are coding defensively using the [`with`][] statement, returning nothing if the page does not exist. By adding an [`else`][] clause we can do some error reporting:
 
 ```go-html-template
 {{ $path := "/auctions/2023-11" }}
@@ -69,9 +69,9 @@ Inside of the `with` block, the [context](g) (the dot) is the section `Page` obj
 {{ end }}
 ```
 
-The result would be wrong when rendering the "auction-1" page because we are comparing the section page to itself.
+The result would be wrong when rendering the `auction-1` page because we are comparing the section page to itself.
 
-> [!note]
+> [!NOTE]
 > Use the `$` to get the context passed into the template.
 
 ```go-html-template
@@ -80,7 +80,7 @@ The result would be wrong when rendering the "auction-1" page because we are com
 {{ end }}
 ```
 
-> [!note]
+> [!NOTE]
 > Gaining a thorough understanding of context is critical for anyone writing template code.
 
 [`else`]: /functions/go-template/else/

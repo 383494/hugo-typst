@@ -6,19 +6,27 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/gohugoio/hugo/common/maps"
+	"github.com/gohugoio/hugo/common/hashing"
+	"github.com/gohugoio/hugo/common/hmaps"
+	"github.com/gohugoio/hugo/common/hugio"
+	"github.com/gohugoio/hugo/common/hugo"
 	"github.com/gohugoio/hugo/common/paths"
 	"github.com/gohugoio/hugo/common/types/css"
 	"github.com/gohugoio/hugo/deps"
+	"github.com/gohugoio/hugo/identity"
+	"github.com/gohugoio/hugo/markup/highlight"
+	"github.com/gohugoio/hugo/markup/markup_config"
 	"github.com/gohugoio/hugo/resources"
 	"github.com/gohugoio/hugo/resources/resource"
 	"github.com/gohugoio/hugo/resources/resource_transformers/babel"
 	"github.com/gohugoio/hugo/resources/resource_transformers/cssjs"
+	jstransform "github.com/gohugoio/hugo/resources/resource_transformers/js"
 	"github.com/gohugoio/hugo/resources/resource_transformers/tocss/dartsass"
 	"github.com/gohugoio/hugo/resources/resource_transformers/tocss/sass"
 	"github.com/gohugoio/hugo/resources/resource_transformers/tocss/scss"
 	"github.com/gohugoio/hugo/tpl/internal"
 	"github.com/gohugoio/hugo/tpl/internal/resourcehelpers"
+	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/cast"
 )
 
@@ -31,12 +39,57 @@ type Namespace struct {
 	postcssClient     *cssjs.PostCSSClient
 	tailwindcssClient *cssjs.TailwindCSSClient
 	babelClient       *babel.Client
+	jsTransformClient *jstransform.Client
+	chromaStylesCache *hmaps.Cache[uint64, resource.Resource]
+	highlightConfig   highlight.Config
 
 	// The Dart Client requires a os/exec process, so  only
 	// create it if we really need it.
 	// This is mostly to avoid creating one per site build test.
 	scssClientDartSassInit sync.Once
 	scssClientDartSass     *dartsass.Client
+}
+
+// ChromaStyles generates a CSS stylesheet for the Chroma code highlighter
+// and returns it as a Resource. This stylesheet is needed if
+// markup.highlight.noClasses is disabled in config.
+// The style defaults to the markup.highlight.style config setting.
+func (ns *Namespace) ChromaStyles(opts any) (resource.Resource, error) {
+	key := hashing.HashUint64(opts)
+	return ns.chromaStylesCache.GetOrCreate(key, func() (resource.Resource, error) {
+		m, err := hmaps.ToStringMapE(opts)
+		if err != nil {
+			return nil, err
+		}
+		var o struct {
+			TargetPath                    string
+			highlight.ChromaStylesOptions `mapstructure:",squash"`
+		}
+
+		if err := mapstructure.WeakDecode(m, &o); err != nil {
+			return nil, err
+		}
+		if o.TargetPath == "" {
+			return nil, errors.New("targetPath cannot be empty")
+		}
+		if o.Style == "" {
+			o.Style = ns.highlightConfig.Style
+		}
+		css, err := highlight.ChromaStylesCSS(o.ChromaStylesOptions)
+		if err != nil {
+			return nil, err
+		}
+
+		return ns.d.ResourceSpec.NewResource(
+			resources.ResourceSourceDescriptor{
+				LazyPublish:   true,
+				GroupIdentity: identity.Anonymous,
+				OpenReadSeekCloser: func() (hugio.ReadSeekCloser, error) {
+					return hugio.NewReadSeekerNoOpCloserFromString(css), nil
+				},
+				TargetPath: o.TargetPath,
+			})
+	})
 }
 
 // Quoted returns a string that needs to be quoted in CSS.
@@ -91,7 +144,7 @@ func (ns *Namespace) Sass(args ...any) (resource.Resource, error) {
 		targetPath string
 		err        error
 		ok         bool
-		transpiler = sass.TranspilerLibSass
+		transpiler = sass.TranspilerLibSass // Deprecated default. Will be dartsass in future versions. See below.
 	)
 
 	r, targetPath, ok = resourcehelpers.ResolveIfFirstArgIsString(args)
@@ -104,9 +157,12 @@ func (ns *Namespace) Sass(args ...any) (resource.Resource, error) {
 	}
 
 	if m != nil {
-		if t, _, found := maps.LookupEqualFold(m, "transpiler"); found {
+		if t, _, found := hmaps.LookupEqualFold(m, "transpiler"); found {
 			switch t {
-			case sass.TranspilerDart, sass.TranspilerLibSass:
+			case sass.TranspilerDart:
+				transpiler = cast.ToString(t)
+			case sass.TranspilerLibSass:
+				hugo.Deprecate("css.Sass: libsass", "Use dartsass instead. See https://gohugo.io/functions/css/sass/#dart-sass", "v0.153.0")
 				transpiler = cast.ToString(t)
 			default:
 				return nil, fmt.Errorf("unsupported transpiler %q; valid values are %q or %q", t, sass.TranspilerLibSass, sass.TranspilerDart)
@@ -143,6 +199,33 @@ func (ns *Namespace) Sass(args ...any) (resource.Resource, error) {
 	return client.ToCSS(r, m)
 }
 
+// Build processes the given CSS Resource with ESBuild.
+// Note that this method is identical to the one in the js Namespace.
+func (ns *Namespace) Build(args ...any) (resource.Resource, error) {
+	var (
+		r          resources.ResourceTransformer
+		m          map[string]any
+		targetPath string
+		err        error
+		ok         bool
+	)
+
+	r, targetPath, ok = resourcehelpers.ResolveIfFirstArgIsString(args)
+
+	if !ok {
+		r, m, err = resourcehelpers.ResolveArgs(args)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if targetPath != "" {
+		m = map[string]any{"targetPath": targetPath}
+	}
+
+	return ns.jsTransformClient.Process(r, m)
+}
+
 func init() {
 	f := func(d *deps.Deps) *internal.TemplateFuncsNamespace {
 		scssClient, err := scss.New(d.BaseFs.Assets, d.ResourceSpec)
@@ -155,6 +238,9 @@ func init() {
 			postcssClient:     cssjs.NewPostCSSClient(d.ResourceSpec),
 			tailwindcssClient: cssjs.NewTailwindCSSClient(d.ResourceSpec),
 			babelClient:       babel.New(d.ResourceSpec),
+			jsTransformClient: jstransform.New(d.BaseFs.Assets, d.ResourceSpec, true),
+			chromaStylesCache: hmaps.NewCacheWithOptions[uint64, resource.Resource](hmaps.CacheOptions{Size: 10}),
+			highlightConfig:   d.Conf.GetConfigSection("markup").(markup_config.Config).Highlight,
 		}
 
 		ns := &internal.TemplateFuncsNamespace{
@@ -162,13 +248,38 @@ func init() {
 			Context: func(cctx context.Context, args ...any) (any, error) { return ctx, nil },
 		}
 
-		ns.AddMethodMapping(ctx.Sass,
-			[]string{"toCSS"},
+		ns.AddMethodMapping(ctx.ChromaStyles,
+			nil,
 			[][2]string{},
 		)
 
 		ns.AddMethodMapping(ctx.PostCSS,
 			[]string{"postCSS"},
+			[][2]string{},
+		)
+
+		ns.AddMethodMapping(ctx.Quoted,
+			nil,
+			[][2]string{},
+		)
+
+		ns.AddMethodMapping(ctx.Sass,
+			[]string{"toCSS"},
+			[][2]string{},
+		)
+
+		ns.AddMethodMapping(ctx.Build,
+			nil,
+			[][2]string{},
+		)
+
+		ns.AddMethodMapping(ctx.TailwindCSS,
+			nil,
+			[][2]string{},
+		)
+
+		ns.AddMethodMapping(ctx.Unquoted,
+			nil,
 			[][2]string{},
 		)
 

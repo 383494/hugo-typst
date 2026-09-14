@@ -7,11 +7,11 @@ params:
   functions_and_methods:
     aliases: [countrunes]
     returnType: int
-    signatures: [strings.CountRunes INPUT]
+    signatures: [strings.CountRunes STRING]
 aliases: [/functions/countrunes]
 ---
 
-In contrast with the [`strings.RuneCount`] function, which counts every rune in a string, `strings.CountRunes` excludes whitespace.
+In contrast with the [`strings.RuneCount`][] function, which counts every rune in a string, `strings.CountRunes` excludes whitespace.
 
 ```go-html-template
 {{ "Hello, 世界" | strings.CountRunes }} → 8

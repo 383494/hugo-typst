@@ -30,22 +30,21 @@ import (
 	"time"
 
 	"github.com/gohugoio/hugo/common/collections"
+	"github.com/gohugoio/hugo/common/hashing"
 	"github.com/gohugoio/hugo/common/herrors"
 	"github.com/gohugoio/hugo/common/hexec"
+	"github.com/gohugoio/hugo/common/hstrings"
+	"github.com/gohugoio/hugo/common/hugio"
 	"github.com/gohugoio/hugo/common/loggers"
 	"github.com/gohugoio/hugo/config"
 
-	hglob "github.com/gohugoio/hugo/hugofs/glob"
-
-	"github.com/gobwas/glob"
+	hglob "github.com/gohugoio/hugo/hugofs/hglob"
 
 	"github.com/gohugoio/hugo/hugofs"
 
 	"github.com/gohugoio/hugo/hugofs/files"
 
 	"golang.org/x/mod/module"
-
-	"github.com/gohugoio/hugo/common/hugio"
 
 	"github.com/spf13/afero"
 )
@@ -88,7 +87,7 @@ func NewClient(cfg ClientConfig) *Client {
 		logger = loggers.NewDefault()
 	}
 
-	var noVendor glob.Glob
+	var noVendor hstrings.Matcher
 	if cfg.ModuleConfig.NoVendor != "" {
 		noVendor, _ = hglob.GetGlob(hglob.NormalizePath(cfg.ModuleConfig.NoVendor))
 	}
@@ -109,7 +108,7 @@ type Client struct {
 	fs     afero.Fs
 	logger loggers.Logger
 
-	noVendor glob.Glob
+	noVendor hstrings.Matcher
 
 	ccfg ClientConfig
 
@@ -405,7 +404,7 @@ func (c *Client) Clean(pattern string) error {
 		return err
 	}
 
-	var g glob.Glob
+	var g hstrings.Matcher
 
 	if pattern != "" {
 		var err error
@@ -440,16 +439,36 @@ func isProbablyModule(path string) bool {
 }
 
 func (c *Client) downloadModuleVersion(path, version string) (*goModule, error) {
-	args := []string{"mod", "download", "-json", fmt.Sprintf("%s@%s", path, version)}
-	b := &bytes.Buffer{}
+	// If it's already cached, use it.
+	const keyPrefix = "downloadmoduleversion_"
+	cacheKey := keyPrefix + hashing.XxHashFromStringHexEncoded(c.ccfg.CacheDir, path, version) + ".json"
+	if b, _ := c.ccfg.ModuleQueriesCache.GetBytes(cacheKey); len(b) > 0 {
+		var cm goModule
+		if err := json.Unmarshal(b, &cm); err == nil && cm.Dir != "" {
+			if c.isDirNonEmpty(cm.Dir) {
+				return &cm, nil
+			}
+		}
+	}
 
+	// No valid cache, need to query.
+	args := []string{"mod", "download", "-json", fmt.Sprintf("%s@%s", path, version)}
+
+	b := &bytes.Buffer{}
 	err := c.runGo(context.Background(), b, args...)
 	if err != nil {
+		// The -json flag makes Go output error details as JSON to stdout
+		// even on failure. Try to extract the error message from the JSON output.
+		if jsonErr := extractGoModDownloadError(b.Bytes()); jsonErr != "" {
+			return nil, fmt.Errorf("failed to download module %s@%s: %s: %s", path, version, err, jsonErr)
+		}
 		return nil, fmt.Errorf("failed to download module %s@%s: %w", path, version, err)
 	}
 
+	jsonResult := b.Bytes()
+
 	m := &goModule{}
-	if err := json.NewDecoder(b).Decode(m); err != nil {
+	if err := json.NewDecoder(bytes.NewReader(jsonResult)).Decode(m); err != nil {
 		return nil, fmt.Errorf("failed to decode module download result: %w", err)
 	}
 
@@ -457,7 +476,24 @@ func (c *Client) downloadModuleVersion(path, version string) (*goModule, error) 
 		return nil, errors.New(m.Error.Err)
 	}
 
+	// Cache the successful result if it has a Dir field.
+	if m.Dir != "" {
+		_ = c.ccfg.ModuleQueriesCache.SetBytes(cacheKey, jsonResult)
+	}
+
 	return m, nil
+}
+
+// isDirNonEmpty returns true if dir exists and contains at least one file or subdirectory.
+func (c *Client) isDirNonEmpty(dir string) bool {
+	f, err := c.fs.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	// Read just one entry to check if directory is non-empty.
+	_, err = f.Readdirnames(1)
+	return err == nil
 }
 
 func (c *Client) listGoMods() (goModules, error) {
@@ -527,6 +563,26 @@ func (c *Client) listGoMods() (goModules, error) {
 		if m.Dir == "" {
 			modulesToDownload = append(modulesToDownload, fmt.Sprintf("%s@%s", m.Path, m.Version))
 		}
+
+		// See https://github.com/golang/go/issues/67363
+		// Origin isn't always set.
+		if m.Origin == nil && m.GoMod != "" {
+			// There's sometimes an Info field with a JSON filename with this info, but that is also not always set.
+			// But we seem to always get the go.mod filename, so we can determine the info filename from that,
+			// just replace the .mod suffix with .info.
+			infoFilename := strings.TrimSuffix(m.GoMod, ".mod") + ".info"
+			// JSON on the form {"Version":"v0.0.0-20260225095909-668663b54d09","Time":"2026-02-25T09:59:09Z","Origin":{"VCS":"git","URL":"https://github.com/bep/hugo-mod-testing-content","Hash":"668663b54d0937df05185d144765d13c3ffda489"}}
+			if b, err := afero.ReadFile(c.fs, infoFilename); err == nil {
+				var info struct {
+					Version string
+					Time    time.Time
+					Origin  *goModuleOrigin
+				}
+				if err := json.Unmarshal(b, &info); err == nil {
+					m.Origin = info.Origin
+				}
+			}
+		}
 	}
 
 	if len(modulesToDownload) > 0 {
@@ -558,7 +614,7 @@ func (c *Client) writeHugoDirectSum(mods Modules) error {
 			continue
 		}
 		if m.IsGoMod() && m.VersionQuery() != "" {
-			sums = append(sums, modSum{pathVersionKey: pathVersionKey{path: m.Path(), version: m.Version()}, sum: m.Sum()})
+			sums = append(sums, modSum{path: m.Path(), version: m.Version(), sum: m.Sum()})
 		}
 	}
 
@@ -846,7 +902,7 @@ type ClientConfig struct {
 
 	// Ignore any _vendor directory for module paths matching the given pattern.
 	// This can be nil.
-	IgnoreVendor glob.Glob
+	IgnoreVendor hstrings.Matcher
 
 	// Ignore any module not found errors.
 	IgnoreModuleDoesNotExist bool
@@ -865,8 +921,15 @@ type ClientConfig struct {
 
 	Exec *hexec.Exec
 
-	CacheDir     string // Module cache
-	ModuleConfig Config
+	CacheDir           string // Module cache
+	ModuleQueriesCache ModuleQueriesCache
+	ModuleConfig       Config
+}
+
+// ModuleQueriesCache is a cache for module version queries.
+type ModuleQueriesCache interface {
+	GetBytes(id string) ([]byte, error)
+	SetBytes(id string, data []byte) error
 }
 
 func (c ClientConfig) shouldIgnoreVendor(path string) bool {
@@ -915,15 +978,38 @@ type goModule struct {
 	Time     *time.Time     // time version was created
 	Update   *goModule      // available update, if any (with -u)
 	Sum      string         // checksum
+	GoModSum string         // checksum for go.mod
 	Main     bool           // is this the main module?
 	Indirect bool           // is this module only an indirect dependency of main module?
 	Dir      string         // directory holding files for this module, if any
 	GoMod    string         // path to go.mod file for this module, if any
 	Error    *goModuleError // error loading module
+	Origin   *goModuleOrigin
+}
+
+type goModuleOrigin struct {
+	VCS    string // version control system, e.g. "git"
+	URL    string // repository URL, e.g. "https://github.com/bep/hugo-testing-git-versions"
+	Subdir string // subdirectory within the repo where the module lives, e.g. "site"
+	Hash   string // commit hash
+	TagSum string
+	Ref    string // e.g. "refs/tags/v3.0.1"
 }
 
 type goModuleError struct {
 	Err string // the error itself
+}
+
+func extractGoModDownloadError(b []byte) string {
+	// go mod download -json outputs Error as a plain string,
+	// unlike go list -m -json which uses {"Err": "..."}.
+	var m struct {
+		Error string
+	}
+	if err := json.Unmarshal(b, &m); err == nil && m.Error != "" {
+		return m.Error
+	}
+	return ""
 }
 
 type goModules []*goModule
@@ -959,18 +1045,32 @@ func (modules goModules) GetMain() *goModule {
 
 func getModlineSplitter(isGoMod bool) func(line string) []string {
 	if isGoMod {
+		var inRequireBlock bool
 		return func(line string) []string {
 			if strings.HasPrefix(line, "require (") {
+				inRequireBlock = true
 				return nil
 			}
-			if !strings.HasPrefix(line, "require") && !strings.HasPrefix(line, "\t") {
+			if inRequireBlock {
+				if strings.HasPrefix(line, ")") {
+					inRequireBlock = false
+					return nil
+				}
+				if !strings.HasPrefix(line, "\t") {
+					return nil
+				}
+			} else if !strings.HasPrefix(line, "require ") {
 				return nil
 			}
 			line = strings.TrimPrefix(line, "require")
 			line = strings.TrimSpace(line)
 			line = strings.TrimSuffix(line, "// indirect")
 
-			return strings.Fields(line)
+			parts := strings.Fields(line)
+			if len(parts) < 2 {
+				return nil
+			}
+			return parts
 		}
 	}
 

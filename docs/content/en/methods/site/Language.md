@@ -1,6 +1,6 @@
 ---
 title: Language
-description: Returns the language object for the given site.
+description: Returns the Language object for the given site.
 categories: []
 keywords: []
 params:
@@ -9,72 +9,96 @@ params:
     signatures: [SITE.Language]
 ---
 
-The `Language` method on a `Site` object returns the language object for the given site. The language object points to the language definition in the site configuration.
+The `Language` method on a `Site` object returns the `Language` object for the given site, derived from the language definition in your project configuration.
 
-You can also use the `Language` method on a `Page` object. See&nbsp;[details].
+You can also use the `Language` method on a `Page` object. See [details][].
 
 ## Methods
 
-The examples below assume the following in your site configuration:
+Use these methods on the `Language` object.
+
+The examples below assume the following language definition.
 
 {{< code-toggle file=hugo >}}
 [languages.de]
-languageCode = 'de-DE'
-languageDirection = 'ltr'
-languageName = 'Deutsch'
-weight = 1
+direction = 'ltr'
+label = 'Deutsch'
+locale = 'de-DE'
+weight = 2
 {{< /code-toggle >}}
 
-### Lang
+`Direction`
+: {{< new-in 0.158.0 />}}
+: (`string`) Returns the [`direction`][] from the language definition.
 
-(`string`) The language tag as defined by [RFC 5646].
+  ```go-html-template
+  {{ .Site.Language.Direction }} → ltr
+  ```
 
-```go-html-template
-{{ .Site.Language.Lang }} → de
-```
+`IsDefault`
+: {{< new-in 0.153.0 />}}
+: (`bool`) Reports whether this is the [default language](g).
 
-### LanguageCode
+  ```go-html-template
+  {{ .Site.Language.IsDefault }} → true
+  ```
 
-(`string`) The language code from the site configuration. Falls back to `Lang` if not defined.
+`Label`
+: {{< new-in 0.158.0 />}}
+: (`string`) Returns the [`label`][] from the language definition.
 
-```go-html-template
-{{ .Site.Language.LanguageCode }} → de-DE
-```
+  ```go-html-template
+  {{ .Site.Language.Label }} → Deutsch
+  ```
 
-### LanguageDirection
+`Lang`
+: {{<deprecated-in 0.158.0 />}}
+: Use [`Name`](#name) instead.
 
-(`string`) The language direction from the site configuration, either `ltr` or `rtl`.
+`LanguageCode`
+: {{<deprecated-in 0.158.0 />}}
+: Use [`Locale`](#locale) instead.
 
-```go-html-template
-{{ .Site.Language.LanguageDirection }} → ltr
-```
+`LanguageDirection`
+: {{<deprecated-in 0.158.0 />}}
+: Use [`Direction`](#direction) instead.
 
-### LanguageName
+`LanguageName`
+: {{<deprecated-in 0.158.0 />}}
+: Use [`Label`](#label) instead.
 
-(`string`) The language name from the site configuration.
+`Locale`
+: {{< new-in 0.158.0 />}}
+: (`string`) Returns the [`locale`][] from the language definition, falling back to [`Name`](#name).
 
-```go-html-template
-{{ .Site.Language.LanguageName }} → Deutsch
-```
+  ```go-html-template
+  {{ .Site.Language.Locale }} → de-DE
+  ```
 
-### Weight
+`Name`
+: {{< new-in 0.153.0 />}}
+: (`string`) Returns the language tag as defined by [RFC 5646][]. This is the lowercased key from the language definition.
 
-(`int`) The language weight from the site configuration which determines its order in the slice of languages returned by the `Languages` method on a `Site` object.
+  ```go-html-template
+  {{ .Site.Language.Name }} → de
+  ```
 
-```go-html-template
-{{ .Site.Language.Weight }} → 1
-```
+`Weight`
+: {{<deprecated-in 0.158.0 />}}
 
 ## Example
 
-Some of the methods above are commonly used in a base template as attributes for the `html` element.
+Some of the methods above are commonly used in a _base_ template as attributes for the `html` element.
 
 ```go-html-template
 <html
-  lang="{{ .Site.Language.LanguageCode }}" 
-  dir="{{ or .Site.Language.LanguageDirection `ltr` }}"
+  lang="{{ .Site.Language.Locale }}"
+  dir="{{ or .Site.Language.Direction `ltr` }}"
 >
 ```
 
-[details]: /methods/page/language/
 [RFC 5646]: https://datatracker.ietf.org/doc/html/rfc5646
+[`direction`]: /configuration/languages/#direction
+[`label`]: /configuration/languages/#label
+[`locale`]: /configuration/languages/#locale
+[details]: /methods/page/language/

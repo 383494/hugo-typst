@@ -17,7 +17,7 @@ aliases: [/functions/urlize]
 
 Use the `urlize` function to create a link to a [term page](g).
 
-Consider this site configuration:
+Consider this project configuration:
 
 {{< code-toggle file=hugo >}}
 [taxonomies]
@@ -33,7 +33,7 @@ authors = ['Victor Hugo']
 
 The published site will have this structure:
 
-```text
+```tree
 public/
 ├── authors/
 │   ├── victor-hugo/
@@ -56,6 +56,6 @@ To create a link to the term page:
 {{ end }}
 ```
 
-To generate a list of term pages associated with a given content page, use the [`GetTerms`] method on a `Page` object.
+To generate a list of term pages associated with a given content page, use the [`GetTerms`][] method on a `Page` object.
 
 [`GetTerms`]: /methods/page/getterms/

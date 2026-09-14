@@ -1,6 +1,6 @@
 ---
 title: Host on Firebase
-description: Host your site on Firebase.
+description: Host your project on Firebase.
 categories: []
 keywords: []
 aliases: [/hosting-and-deployment/hosting-on-firebase/]
@@ -8,8 +8,8 @@ aliases: [/hosting-and-deployment/hosting-on-firebase/]
 
 ## Assumptions
 
-1. You have an account with [Firebase][signup]. (If you don't, you can sign up for free using your Google account.)
-1. You have completed the [Quick Start] or have a completed Hugo website ready for deployment.
+1. You have an account with [Firebase][signup].
+1. You have completed the [Quick Start][] or have a completed Hugo website ready for deployment.
 
 ## Initial setup
 
@@ -63,7 +63,7 @@ In new versions of Firebase, some other questions apply:
 After that Firebase has been set in your project with [CI/CD](g). After that run:
 
 ```sh
-hugo && firebase deploy
+hugo build && firebase deploy
 ```
 
 With this you will have the app initialized manually. After that you can manage and fix your GitHub workflow from <https://github.com/your-account/your-repo/actions>.
@@ -88,7 +88,7 @@ firebase login:ci
 
 You can also set up your CI and add the token to a private variable like `$FIREBASE_DEPLOY_TOKEN`.
 
-> [!note]
+> [!NOTE]
 > This is a private secret and it should not appear in a public repository. Make sure you understand your chosen CI and that it's not visible to others.
 
 You can then add a step in your build to do the deployment using the token:
@@ -99,8 +99,9 @@ firebase deploy --token $FIREBASE_DEPLOY_TOKEN
 
 ## Reference links
 
-- [Firebase CLI Reference](https://firebase.google.com/docs/cli/#administrative_commands)
+- [Firebase CLI Reference][]
 
-[console]: https://console.firebase.google.com/
+[Firebase CLI Reference]: https://firebase.google.com/docs/cli/#administrative_commands
 [Quick Start]: /getting-started/quick-start/
+[console]: https://console.firebase.google.com/
 [signup]: https://console.firebase.google.com/

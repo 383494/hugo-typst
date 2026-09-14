@@ -71,7 +71,7 @@ type Module interface {
 	// The version query requested in the import.
 	VersionQuery() string
 
-	// The expected cryptographic hash of the module.
+	// Checksum for path, version
 	Sum() string
 
 	// Time version was created.
@@ -79,6 +79,22 @@ type Module interface {
 
 	// Whether this module's dir is a watch candidate.
 	Watch() bool
+
+	// Origin returns the module's origin info if available (VCS, URL, Hash, etc.).
+	Origin() ModuleOrigin
+}
+
+// ModuleOrigin contains origin info for a Go module.
+type ModuleOrigin struct {
+	VCS    string // version control system, e.g. "git"
+	URL    string // repository URL, e.g. "https://github.com/bep/hugo-testing-git-versions"
+	Subdir string // subdirectory within the repo where the module lives, e.g. "site"
+	Hash   string // commit hash
+	Ref    string // e.g. "refs/tags/v3.0.1"
+}
+
+func (o ModuleOrigin) IsZero() bool {
+	return o.URL == ""
 }
 
 type Modules []Module
@@ -218,4 +234,17 @@ func (m *moduleAdapter) Watch() bool {
 	// Any module set up in a workspace file will have Indirect set to false.
 	// That leaves modules inside the read-only module cache.
 	return !m.gomod.Indirect
+}
+
+func (m *moduleAdapter) Origin() ModuleOrigin {
+	if !m.IsGoMod() || m.gomod.Origin == nil {
+		return ModuleOrigin{}
+	}
+	return ModuleOrigin{
+		VCS:    m.gomod.Origin.VCS,
+		URL:    m.gomod.Origin.URL,
+		Subdir: m.gomod.Origin.Subdir,
+		Hash:   m.gomod.Origin.Hash,
+		Ref:    m.gomod.Origin.Ref,
+	}
 }

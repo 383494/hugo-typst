@@ -20,8 +20,8 @@ import (
 
 	"github.com/spf13/cast"
 
+	"github.com/gohugoio/hugo/common/hmaps"
 	"github.com/gohugoio/hugo/common/hreflect"
-	"github.com/gohugoio/hugo/common/maps"
 )
 
 // Index returns the result of indexing its first argument by the following
@@ -63,7 +63,7 @@ func (ns *Namespace) doIndex(item any, args ...any) (any, error) {
 		indices = args
 	}
 
-	lowerm, ok := item.(maps.Params)
+	lowerm, ok := item.(hmaps.Params)
 	if ok {
 		return lowerm.GetNested(cast.ToStringSlice(indices)...), nil
 	}
@@ -138,7 +138,7 @@ func prepareArg(value reflect.Value, argType reflect.Type) (reflect.Value, error
 // Copied from Go stdlib src/text/template/exec.go.
 func canBeNil(typ reflect.Type) bool {
 	switch typ.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return true
 	}
 	return false

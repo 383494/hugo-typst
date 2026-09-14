@@ -14,11 +14,15 @@
 package i18n
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/gohugoio/hugo/common/paths"
+	"github.com/gohugoio/hugo/config"
+	"github.com/gohugoio/hugo/langs"
 	"github.com/gohugoio/hugo/parser/metadecoders"
 
 	"github.com/gohugoio/hugo/common/herrors"
@@ -57,16 +61,18 @@ func (tp *TranslationProvider) NewResource(dst *deps.Deps) error {
 	bundle.RegisterUnmarshalFunc("yml", metadecoders.UnmarshalYaml)
 	bundle.RegisterUnmarshalFunc("json", json.Unmarshal)
 
+	var files []hugofs.FileMetaInfo
 	w := hugofs.NewWalkway(
 		hugofs.WalkwayConfig{
 			Fs:         dst.BaseFs.I18n.Fs,
 			IgnoreFile: dst.SourceSpec.IgnoreFile,
 			PathParser: dst.SourceSpec.Cfg.PathParser(),
-			WalkFn: func(path string, info hugofs.FileMetaInfo) error {
+			WalkFn: func(ctx context.Context, path string, info hugofs.FileMetaInfo) error {
 				if info.IsDir() {
 					return nil
 				}
-				return addTranslationFile(bundle, source.NewFileInfo(info))
+				files = append(files, info)
+				return nil
 			},
 		})
 
@@ -74,9 +80,24 @@ func (tp *TranslationProvider) NewResource(dst *deps.Deps) error {
 		return err
 	}
 
+	// Sort translation files so that base tags (e.g. "de") are always registered
+	// before their subtag variants (e.g. "de-DE"); without this ordering the
+	// fallback chain breaks. See https://github.com/gohugoio/hugo/issues/7982.
+	sort.Slice(files, func(i, j int) bool {
+		si := files[i].Meta().PathInfo.NameNoExt()
+		sj := files[j].Meta().PathInfo.NameNoExt()
+		return strings.Count(si, "-") < strings.Count(sj, "-")
+	})
+
+	for _, info := range files {
+		if err := addTranslationFile(bundle, source.NewFileInfo(info)); err != nil {
+			return err
+		}
+	}
+
 	tp.t = NewTranslator(bundle, dst.Conf, dst.Log)
 
-	dst.Translate = tp.t.Func(dst.Conf.Language().Lang)
+	dst.Translate = tp.getTranslateFunc(dst)
 
 	return nil
 }
@@ -126,8 +147,33 @@ func addTranslationFile(bundle *i18n.Bundle, r *source.File) error {
 
 // CloneResource sets the language func for the new language.
 func (tp *TranslationProvider) CloneResource(dst, src *deps.Deps) error {
-	dst.Translate = tp.t.Func(dst.Conf.Language().Lang)
+	dst.Translate = tp.getTranslateFunc(dst)
 	return nil
+}
+
+func defaultLanguage(conf config.AllProvider) *langs.Language {
+	key := conf.DefaultContentLanguage()
+	for _, l := range conf.Languages().(langs.Languages) {
+		if l.Lang == key {
+			return l
+		}
+	}
+	return conf.Language().(*langs.Language)
+}
+
+// getTranslateFunc returns the translation function for the language in Deps.
+// The lookup order is: current locale, current key, default locale, default key.
+func (tp *TranslationProvider) getTranslateFunc(dst *deps.Deps) func(ctx context.Context, translationID string, templateData any) string {
+	current := dst.Conf.Language().(*langs.Language)
+	defaultLang := defaultLanguage(dst.Conf)
+	for _, l := range []*langs.Language{current, defaultLang} {
+		for _, key := range []string{strings.ToLower(l.Locale()), l.Lang} {
+			if fn, ok := tp.t.Lookup(key); ok {
+				return fn
+			}
+		}
+	}
+	return tp.t.Func("en")
 }
 
 func errWithFileContext(inerr error, r *source.File) error {

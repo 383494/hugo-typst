@@ -33,7 +33,7 @@ theme = ["mytheme"]
 iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==
 -- themes/mytheme/static/images/pixel2.png --
 iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==
--- layouts/index.html --
+-- layouts/home.html --
 {{ $path := "static/images/pixel1.png" }}
 fileExists OK: {{ fileExists $path }}|
 imageConfig OK: {{ (imageConfig $path).Width }}|
@@ -59,7 +59,7 @@ func TestQR(t *testing.T) {
 	files := `
 -- hugo.toml --
 disableKinds = ['page','rss','section','sitemap','taxonomy','term']
--- layouts/index.html --
+-- layouts/home.html --
 {{- $text := "https://gohugo.io" }}
 {{- $optionMaps := slice
     (dict)
@@ -79,7 +79,8 @@ disableKinds = ['page','rss','section','sitemap','taxonomy','term']
 `
 
 	b := hugolib.Test(t, files)
-	b.AssertFileContent("public/index.html",
+	b.AssertFileContent(
+		"public/index.html",
 		`<img data-id="0" data-img-hash="6ccacf8056c41475" data-level="" data-scale="" data-targetDir="" src="/qr_924bf7d80a564b23.png">`,
 		`<img data-id="1" data-img-hash="6ccacf8056c41475" data-level="medium" data-scale="" data-targetDir="" src="/qr_924bf7d80a564b23.png">`,
 		`<img data-id="2" data-img-hash="6ccacf8056c41475" data-level="medium" data-scale="4" data-targetDir="" src="/qr_924bf7d80a564b23.png">`,
@@ -117,7 +118,7 @@ func TestImagesGoldenFuncs(t *testing.T) {
 -- assets/sunset.jpg --
 sourcefilename: ../../resources/testdata/sunset.jpg
 
--- layouts/index.html --
+-- layouts/home.html --
 Home.
 
 {{ template "copy" (dict "name" "qr-default.png" "img" (images.QR "https://gohugo.io"))  }}
@@ -141,4 +142,80 @@ Home.
 	opts.Files = files
 
 	imagetesting.RunGolden(opts)
+}
+
+func TestPNGIssue14288(t *testing.T) {
+	t.Parallel()
+
+	files := `
+-- assets/qr.png --
+sourcefilename: testdata/images_golden/funcs/qr-level-high_scale-6.png
+-- layouts/home.html --
+{{ $img := resources.Get "qr.png" }}
+images.Config: {{ (images.Config "assets/qr.png").Width }}
+Resize to 100x100: {{ ($img.Resize "100x100" ).Width }}
+Brightnes method: {{ ($img.Filter (images.Brightness 12) ).RelPermalink }}
+Brightnes func: {{ ($img | images.Filter (images.Brightness 12) ).RelPermalink }}
+`
+
+	b := hugolib.Test(t, files)
+	b.AssertFileContent("public/index.html", `
+images.Config: 222
+Resize to 100x100: 100
+Brightnes method: /qr_hu_e82a6802e23c740e.png
+Brightnes func: /qr_hu_e82a6802e23c740e.png
+`)
+}
+
+func TestPNGNamedWebpIssue14288(t *testing.T) {
+	t.Parallel()
+
+	files := `
+-- assets/qr.webp --
+sourcefilename: testdata/images_golden/funcs/qr-level-high_scale-6.png
+-- layouts/home.html --
+{{ $img := resources.Get "qr.webp" }}
+images.Config: {{ (images.Config "assets/qr.webp").Width }}
+Resize to 100x100: {{ ($img.Resize "100x100" ).Width }}
+Brightnes method: {{ ($img.Filter (images.Brightness 12) ).RelPermalink }}
+Brightnes func: {{ ($img | images.Filter (images.Brightness 12) ).RelPermalink }}
+`
+
+	b := hugolib.Test(t, files)
+	b.AssertFileContent("public/index.html", `
+images.Config: 222
+Resize to 100x100: 100
+Brightnes method: /qr_hu_61e637d0f762ec78.webp
+Brightnes func: /qr_hu_61e637d0f762ec78.webp
+`)
+}
+
+// Note that this test doesn't really reproduce the original issue,
+// but keep it as a regression test for WebP decoding in general.
+// TODO(bep) I fixed the failing site, but I don't really understand why it failed. But now it's Christmas.
+func TestPNGIssue14295(t *testing.T) {
+	t.Parallel()
+
+	files := `
+-- hugo.toml --
+disableLiveReload = true
+-- assets/qr.png --
+sourcefilename: testdata/images_golden/funcs/qr-level-high_scale-6.png
+-- layouts/home.html --
+{{ $img := resources.Get "qr.png" }}
+{{ $img = $img.Resize "200x webp" | images.Filter (images.GaussianBlur 5) }}
+Image: {{ $img.RelPermalink }}
+
+`
+
+	tempDir := t.TempDir()
+
+	for range 2 {
+		b := hugolib.Test(t, files, hugolib.TestOptWithConfig(func(cfg *hugolib.IntegrationTestConfig) {
+			cfg.NeedsOsFS = true
+			cfg.WorkingDir = tempDir
+		}))
+		b.AssertFileContent("public/index.html", `Image: /qr_hu_7178b50f0d0a9def.webp`)
+
+	}
 }

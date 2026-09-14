@@ -2,8 +2,8 @@
 # Twitter:      https://twitter.com/gohugoio
 # Website:      https://gohugo.io/
 
-ARG GO_VERSION="1.25"
-ARG ALPINE_VERSION="3.22"
+ARG GO_VERSION="1.27"
+ARG ALPINE_VERSION="3.24"
 ARG DART_SASS_VERSION="1.79.3"
 
 FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.5.0 AS xx
@@ -65,7 +65,9 @@ RUN apk add --no-cache \
     git \
     runuser \
     nodejs \
-    npm
+    npm \
+    openssh-client \
+    tar
 
 RUN mkdir -p /var/hugo/bin /cache && \
     addgroup -Sg 1000 hugo && \

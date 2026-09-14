@@ -30,7 +30,7 @@ func TestBuildVariants(t *testing.T) {
 	c := qt.New(t)
 
 	mainWithImport := `
--- config.toml --
+-- hugo.toml --
 disableKinds=["page", "section", "taxonomy", "term", "sitemap", "robotsTXT"]
 disableLiveReload = true
 -- assets/js/main.js --
@@ -49,20 +49,20 @@ export function hello2() {
 export function hello3() {
 	return 'efgh';
 }
--- layouts/index.html --
+-- layouts/home.html --
 {{ $js := resources.Get "js/main.js" | js.Build }}
 JS Content:{{ $js.Content }}:End:
 
 			`
 
 	c.Run("Basic", func(c *qt.C) {
-		b := hugolib.NewIntegrationTestBuilder(hugolib.IntegrationTestConfig{T: c, NeedsOsFS: true, TxtarString: mainWithImport}).Build()
+		b := hugolib.Test(c, mainWithImport, hugolib.TestOptOsFs())
 
 		b.AssertFileContent("public/index.html", `abcd`)
 	})
 
 	c.Run("Edit Import", func(c *qt.C) {
-		b := hugolib.NewIntegrationTestBuilder(hugolib.IntegrationTestConfig{T: c, Running: true, NeedsOsFS: true, TxtarString: mainWithImport}).Build()
+		b := hugolib.Test(c, mainWithImport, hugolib.TestOptRunning(), hugolib.TestOptOsFs())
 
 		b.AssertFileContent("public/index.html", `abcd`)
 		b.EditFileReplaceFunc("assets/js/util1.js", func(s string) string { return strings.ReplaceAll(s, "abcd", "1234") }).Build()
@@ -70,12 +70,48 @@ JS Content:{{ $js.Content }}:End:
 	})
 
 	c.Run("Edit Import Nested", func(c *qt.C) {
-		b := hugolib.NewIntegrationTestBuilder(hugolib.IntegrationTestConfig{T: c, Running: true, NeedsOsFS: true, TxtarString: mainWithImport}).Build()
+		b := hugolib.Test(c, mainWithImport, hugolib.TestOptRunning(), hugolib.TestOptOsFs())
 
 		b.AssertFileContent("public/index.html", `efgh`)
 		b.EditFileReplaceFunc("assets/js/util2.js", func(s string) string { return strings.ReplaceAll(s, "efgh", "1234") }).Build()
 		b.AssertFileContent("public/index.html", `1234`)
 	})
+}
+
+// Issue #15173.
+func TestBuildDataArtifacts(t *testing.T) {
+	t.Parallel()
+
+	files := `
+-- hugo.toml --
+baseURL = "https://example.org/"
+disableKinds=["page", "section", "taxonomy", "term", "sitemap", "robotsTXT"]
+-- assets/js/main.js --
+import { hello } from './util';
+hello();
+-- assets/js/util.js --
+export function hello() {
+	return 'abcd';
+}
+-- layouts/home.html --
+{{ with resources.Get "js/main.js" | js.Build (dict "minify" true "sourcemap" "external") }}
+COUNT: {{ len .Data.Artifacts }}
+{{ range .Data.Artifacts }}
+ARTIFACT: {{ .RelPermalink }}|{{ .Permalink }}|{{ .MediaType.Type }}
+{{ end }}
+{{ end }}
+{{ with resources.Get "js/main.js" | js.Build }}
+COUNT2: {{ len .Data.Artifacts }}
+{{ end }}
+`
+
+	b := hugolib.Test(t, files, hugolib.TestOptOsFs())
+	b.AssertFileContent("public/index.html",
+		"COUNT: 1",
+		"ARTIFACT: /js/main.js.map|https://example.org/js/main.js.map|application/source-map",
+		"COUNT2: 0",
+	)
+	b.AssertFileExists("public/js/main.js.map", true)
 }
 
 func TestBuildWithModAndNpm(t *testing.T) {
@@ -86,7 +122,7 @@ func TestBuildWithModAndNpm(t *testing.T) {
 	c := qt.New(t)
 
 	files := `
--- config.toml --
+-- hugo.toml --
 baseURL = "https://example.org"
 disableKinds=["page", "section", "taxonomy", "term", "sitemap", "robotsTXT"]
 [module]
@@ -106,14 +142,9 @@ require github.com/gohugoio/hugoTestProjectJSModImports v0.10.0 // indirect
 }
 
 `
-	b := hugolib.NewIntegrationTestBuilder(
-		hugolib.IntegrationTestConfig{
-			T:               c,
-			NeedsOsFS:       true,
-			NeedsNpmInstall: true,
-			TxtarString:     files,
-			Verbose:         true,
-		}).Build()
+	b := hugolib.Test(c, files, hugolib.TestOptOsFs(), hugolib.TestOptWithNpmInstall(), hugolib.TestOptWithConfig(func(cfg *hugolib.IntegrationTestConfig) {
+		cfg.Verbose = true
+	}))
 
 	b.AssertFileContent("public/js/main.js", `
 greeting: "greeting configured in mod2"
@@ -163,7 +194,7 @@ function greeter(person: string) {
 }
 let user = [0, 1, 2];
 document.body.textContent = greeter(user);
--- config.toml --
+-- hugo.toml --
 disablekinds = ['taxonomy', 'term', 'page']
 -- content/p1.md --
 Content.
@@ -175,7 +206,7 @@ hello:
 -- i18n/fr.yaml --
 hello:
    other: "Bonjour"
--- layouts/index.html --
+-- layouts/home.html --
 {{ $options := dict "minify" false "externals" (slice "react" "react-dom")  "sourcemap" "linked" }}
 {{ $js := resources.Get "js/main.js" | js.Build $options }}
 JS:  {{ template "print" $js }}
@@ -196,13 +227,7 @@ TS2: {{ template "print" $ts2 }}
 }
 `
 
-	b := hugolib.NewIntegrationTestBuilder(
-		hugolib.IntegrationTestConfig{
-			T:               c,
-			NeedsOsFS:       true,
-			NeedsNpmInstall: true,
-			TxtarString:     files,
-		}).Build()
+	b := hugolib.Test(c, files, hugolib.TestOptOsFs(), hugolib.TestOptWithNpmInstall())
 
 	b.AssertFileContent("public/js/main.js", `//# sourceMappingURL=main.js.map`)
 	b.AssertFileContent("public/js/main.js.map", `"version":3`, "! ns-hugo")                                   // linked
@@ -228,14 +253,14 @@ TS2: {{ template "print" $ts2 }}
 		}
 	}
 
-	checkMap("public/js/main.js.map", 4)
+	checkMap("public/js/main.js.map", 5)
 }
 
 func TestBuildError(t *testing.T) {
 	c := qt.New(t)
 
 	filesTemplate := `
--- config.toml --
+-- hugo.toml --
 disableKinds=["page", "section", "taxonomy", "term", "sitemap", "robotsTXT"]
 -- assets/js/main.js --
 // A comment.
@@ -257,7 +282,7 @@ export function hello2() {
 export function hello3() {
 	return 'efgh';
 }
--- layouts/index.html --
+-- layouts/home.html --
 {{ $js := resources.Get "js/main.js" | js.Build }}
 JS Content:{{ $js.Content }}:End:
 
@@ -266,7 +291,7 @@ JS Content:{{ $js.Content }}:End:
 	c.Run("Import from main not found", func(c *qt.C) {
 		c.Parallel()
 		files := strings.Replace(filesTemplate, "import { hello1, hello2 }", "import { hello1, hello2, FOOBAR }", 1)
-		b, err := hugolib.NewIntegrationTestBuilder(hugolib.IntegrationTestConfig{T: c, NeedsOsFS: true, TxtarString: files}).BuildE()
+		b, err := hugolib.TestE(c, files, hugolib.TestOptOsFs())
 		b.Assert(err, qt.IsNotNil)
 		b.Assert(err.Error(), qt.Contains, `main.js:2:25": No matching export`)
 	})
@@ -274,7 +299,7 @@ JS Content:{{ $js.Content }}:End:
 	c.Run("Import from import not found", func(c *qt.C) {
 		c.Parallel()
 		files := strings.Replace(filesTemplate, "import { hello3 } from './util2';", "import { hello3, FOOBAR } from './util2';", 1)
-		b, err := hugolib.NewIntegrationTestBuilder(hugolib.IntegrationTestConfig{T: c, NeedsOsFS: true, TxtarString: files}).BuildE()
+		b, err := hugolib.TestE(c, files, hugolib.TestOptOsFs())
 		b.Assert(err, qt.IsNotNil)
 		b.Assert(err.Error(), qt.Contains, `util1.js:4:17": No matching export in`)
 	})
@@ -297,19 +322,14 @@ console.log("IMPORT_SRC_DIR:imp3/foo.ts");
 import 'imp1/index.js';
 import 'imp2/index.js';
 import 'imp3/foo.js';
--- layouts/index.html --
+-- layouts/home.html --
 {{ $js := resources.Get "js/main.js" | js.Build }}
 {{ $js.RelPermalink }}
 			`
 
 			files = strings.ReplaceAll(files, "IMPORT_SRC_DIR", importSrcDir)
 
-			b := hugolib.NewIntegrationTestBuilder(
-				hugolib.IntegrationTestConfig{
-					T:           c,
-					NeedsOsFS:   true,
-					TxtarString: files,
-				}).Build()
+			b := hugolib.Test(c, files, hugolib.TestOptOsFs())
 
 			expected := `
 IMPORT_SRC_DIR:imp1/index.js
@@ -343,17 +363,12 @@ console.log("Hello 1");
 -- assets/js/utils/util2.js --
 //! License util2  */
 console.log("Hello 2");
--- layouts/index.html --
+-- layouts/home.html --
 {{ $js := resources.Get "js/main.js" | js.Build (dict "minify" false) }}
 {{ $js.RelPermalink }}
 `
 
-	b := hugolib.NewIntegrationTestBuilder(
-		hugolib.IntegrationTestConfig{
-			T:           t,
-			NeedsOsFS:   true,
-			TxtarString: files,
-		}).Build()
+	b := hugolib.Test(t, files, hugolib.TestOptOsFs())
 
 	b.AssertFileContent("public/js/main.js", `
 License util1
@@ -379,16 +394,11 @@ disableKinds = ['RSS','sitemap','taxonomy','term']
 function addFoo(target: any) {target.prototype.foo = 'bar'}
 @addFoo
 class A {}
--- layouts/index.html --
+-- layouts/home.html --
 {{ $opts := dict "target" "es2020" "targetPath" "js/main.js" }}
 {{ (resources.Get "ts/main.ts" | js.Build $opts).Publish }}
 `
-	b := hugolib.NewIntegrationTestBuilder(
-		hugolib.IntegrationTestConfig{
-			T:           t,
-			NeedsOsFS:   true,
-			TxtarString: files,
-		}).Build()
+	b := hugolib.Test(t, files, hugolib.TestOptOsFs())
 	b.AssertFileContent("public/js/main.js", "__decorateClass")
 }
 
@@ -409,7 +419,7 @@ import { hello2 } from './util2.js';
 
 hello1();
 hello2();
--- layouts/index.html --
+-- layouts/home.html --
 Home.
 {{ $js := resources.Get "js/main.js" | js.Build (dict "externals" (slice "./util1.js")) }}
 {{ $js.Publish }}
@@ -419,4 +429,22 @@ Home.
 
 	b.AssertFileContent("public/js/main.js", "efgh")
 	b.AssertFileContent("public/js/main.js", "! abcd")
+}
+
+func TestBuildErrorStack(t *testing.T) {
+	files := `
+-- hugo.toml --
+disableKinds=["page", "section", "taxonomy", "term", "sitemap", "robotsTXT"]
+-- assets/js/main.js --
+import { hello1, hello2 } from './util1';
+hello1();
+-- layouts/home.html --
+{{ $js := resources.Get "js/main.js" | js.Build }}
+JS Content:{{ $js.Content }}:End:
+`
+
+	b, err := hugolib.TestE(t, files, hugolib.TestOptOsFs())
+	b.Assert(err, qt.IsNotNil)
+	b.Assert(err.Error(), qt.Contains, `execute of template failed: template: home.html:2:17`)
+	b.Assert(err.Error(), qt.Contains, `main.js:1:31": Could not resolve "./util1"`)
 }

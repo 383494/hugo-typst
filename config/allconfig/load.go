@@ -22,24 +22,25 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/gobwas/glob"
 	"github.com/gohugoio/hugo/common/herrors"
 	"github.com/gohugoio/hugo/common/hexec"
+	"github.com/gohugoio/hugo/common/hmaps"
+	"github.com/gohugoio/hugo/common/hstrings"
 	"github.com/gohugoio/hugo/common/hugo"
 	"github.com/gohugoio/hugo/common/loggers"
-	"github.com/gohugoio/hugo/common/maps"
 	"github.com/gohugoio/hugo/common/paths"
 	"github.com/gohugoio/hugo/common/types"
 	"github.com/gohugoio/hugo/config"
 	"github.com/gohugoio/hugo/helpers"
-	hglob "github.com/gohugoio/hugo/hugofs/glob"
+	hglob "github.com/gohugoio/hugo/hugofs/hglob"
 	"github.com/gohugoio/hugo/modules"
+	"github.com/gohugoio/hugo/modules/npm"
 	"github.com/gohugoio/hugo/parser/metadecoders"
 	"github.com/spf13/afero"
 )
 
 //lint:ignore ST1005 end user message.
-var ErrNoConfigFile = errors.New("Unable to locate config file or config directory. Perhaps you need to create a new site.\n       Run `hugo help new` for details.\n")
+var ErrNoConfigFile = errors.New("Unable to locate config file or config directory. Perhaps you need to create a new project.\n       Run `hugo help new` for details.\n")
 
 func LoadConfig(d ConfigSourceDescriptor) (configs *Configs, err error) {
 	defer func() {
@@ -88,14 +89,18 @@ func LoadConfig(d ConfigSourceDescriptor) (configs *Configs, err error) {
 			return nil, fmt.Errorf("failed to create config from modules config: %w", err)
 		}
 		configs.LoadingInfo.ConfigFiles = append(configs.LoadingInfo.ConfigFiles, l.ModulesConfigFiles...)
-	} else if err := configs.transientErr(); err != nil {
+	} else if err := configs.transientErr(); err != nil && !d.IgnoreModuleDoesNotExist {
 		return nil, fmt.Errorf("failed to create config: %w", err)
 	}
 
 	configs.Modules = moduleConfig.AllModules
 	configs.ModulesClient = modulesClient
 
-	if err := configs.Init(); err != nil {
+	if !d.SkipNpmCheck && npm.NpmPackNeedsUpdate(d.Fs, configs.Modules) {
+		d.Logger.Warnln(`npm dependencies are out of sync, please run "hugo mod npm pack" (you may also want to run "npm install" after that)`)
+	}
+
+	if err := configs.Init(d.Fs, d.Logger); err != nil {
 		return nil, fmt.Errorf("failed to init config: %w", err)
 	}
 
@@ -127,6 +132,9 @@ type ConfigSourceDescriptor struct {
 
 	// If set, this will be used to ignore the module does not exist error.
 	IgnoreModuleDoesNotExist bool
+
+	// If set, skip the npm pack staleness check (used by hugo mod npm pack).
+	SkipNpmCheck bool
 }
 
 func (d ConfigSourceDescriptor) configFilenames() []string {
@@ -166,7 +174,7 @@ func (l configLoader) applyConfigAliases() error {
 }
 
 func (l configLoader) applyDefaultConfig() error {
-	defaultSettings := maps.Params{
+	defaultSettings := hmaps.Params{
 		// These dirs are used early/before we build the config struct.
 		"themesDir": "themes",
 		"configDir": "config",
@@ -179,14 +187,14 @@ func (l configLoader) applyDefaultConfig() error {
 
 func (l configLoader) normalizeCfg(cfg config.Provider) error {
 	if b, ok := cfg.Get("minifyOutput").(bool); ok {
-		hugo.Deprecate("site config minifyOutput", "Use minify.minifyOutput instead.", "v0.150.0")
+		hugo.Deprecate("project config minifyOutput", "Use minify.minifyOutput instead.", "v0.150.0")
 		if b {
 			cfg.Set("minify.minifyOutput", true)
 		}
 	} else if b, ok := cfg.Get("minify").(bool); ok {
-		hugo.Deprecate("site config minify", "Use minify.minifyOutput instead.", "v0.150.0")
+		hugo.Deprecate("project config minify", "Use minify.minifyOutput instead.", "v0.150.0")
 		if b {
-			cfg.Set("minify", maps.Params{"minifyOutput": true})
+			cfg.Set("minify", hmaps.Params{"minifyOutput": true})
 		}
 	}
 
@@ -220,8 +228,8 @@ func (l configLoader) applyOsEnvOverrides(environ []string) error {
 	var hugoEnv []types.KeyValueStr
 	for _, v := range environ {
 		key, val := config.SplitEnvVar(v)
-		if strings.HasPrefix(key, hugoEnvPrefix) {
-			delimiterAndKey := strings.TrimPrefix(key, hugoEnvPrefix)
+		if after, ok := strings.CutPrefix(key, hugoEnvPrefix); ok {
+			delimiterAndKey := after
 			if len(delimiterAndKey) < 2 {
 				continue
 			}
@@ -240,7 +248,7 @@ func (l configLoader) applyOsEnvOverrides(environ []string) error {
 	}
 
 	for _, env := range hugoEnv {
-		existing, nestedKey, owner, err := maps.GetNestedParamFn(env.Key, delim, l.cfg.Get)
+		existing, nestedKey, owner, err := hmaps.GetNestedParamFn(env.Key, delim, l.cfg.Get)
 		if err != nil {
 			return err
 		}
@@ -443,7 +451,7 @@ func (l *configLoader) loadModules(configs *Configs, ignoreModuleDoesNotExist bo
 
 	cfg := configs.LoadingInfo.Cfg
 
-	var ignoreVendor glob.Glob
+	var ignoreVendor hstrings.Matcher
 	if s := conf.IgnoreVendorPaths; s != "" {
 		ignoreVendor, _ = hglob.GetGlob(hglob.NormalizePath(s))
 	}
@@ -477,6 +485,7 @@ func (l *configLoader) loadModules(configs *Configs, ignoreModuleDoesNotExist bo
 		PublishDir:               publishDir,
 		Environment:              l.Environment,
 		CacheDir:                 conf.Caches.CacheDirModules(),
+		ModuleQueriesCache:       configs.FileCaches.ModuleQueriesCache(),
 		ModuleConfig:             conf.Module,
 		IgnoreVendor:             ignoreVendor,
 		IgnoreModuleDoesNotExist: ignoreModuleDoesNotExist,
@@ -547,7 +556,7 @@ func (l configLoader) loadConfig(configName string) (string, error) {
 }
 
 func (l configLoader) deleteMergeStrategies() (err error) {
-	l.cfg.WalkParams(func(params ...maps.KeyParams) bool {
+	l.cfg.WalkParams(func(params ...hmaps.KeyParams) bool {
 		params[len(params)-1].Params.DeleteMergeStrategy()
 		return false
 	})

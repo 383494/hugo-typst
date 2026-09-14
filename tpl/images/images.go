@@ -19,8 +19,9 @@ import (
 	"fmt"
 	"image"
 	"path"
-	"sync"
+	"path/filepath"
 
+	"github.com/bep/helpers/maphelpers"
 	"github.com/bep/overlayfs"
 	"github.com/gohugoio/hugo/common/hashing"
 	"github.com/gohugoio/hugo/common/hugio"
@@ -28,14 +29,6 @@ import (
 	"github.com/gohugoio/hugo/resources/resource_factories/create"
 	"github.com/mitchellh/mapstructure"
 	"rsc.io/qr"
-
-	// Importing image codecs for image.DecodeConfig
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
-
-	// Import webp codec
-	_ "golang.org/x/image/webp"
 
 	"github.com/gohugoio/hugo/deps"
 	"github.com/spf13/afero"
@@ -59,7 +52,7 @@ func New(d *deps.Deps) *Namespace {
 	return &Namespace{
 		readFileFs:   readFileFs,
 		Filters:      &images.Filters{},
-		cache:        map[string]image.Config{},
+		cache:        maphelpers.NewConcurrentMap[string, image.Config](),
 		deps:         d,
 		createClient: create.New(d.ResourceSpec),
 	}
@@ -69,8 +62,7 @@ func New(d *deps.Deps) *Namespace {
 type Namespace struct {
 	*images.Filters
 	readFileFs   afero.Fs
-	cacheMu      sync.RWMutex
-	cache        map[string]image.Config
+	cache        *maphelpers.ConcurrentMap[string, image.Config]
 	deps         *deps.Deps
 	createClient *create.Client
 }
@@ -87,31 +79,19 @@ func (ns *Namespace) Config(path any) (image.Config, error) {
 		return image.Config{}, errors.New("config needs a filename")
 	}
 
-	// Check cache for image config.
-	ns.cacheMu.RLock()
-	config, ok := ns.cache[filename]
-	ns.cacheMu.RUnlock()
+	return ns.cache.GetOrCreate(filename, func() (image.Config, error) {
+		f, err := ns.readFileFs.Open(filename)
+		if err != nil {
+			return image.Config{}, err
+		}
+		defer f.Close()
 
-	if ok {
-		return config, nil
-	}
+		ext := filepath.Ext(filename)
+		format, _ := images.ImageFormatFromExt(ext)
 
-	f, err := ns.readFileFs.Open(filename)
-	if err != nil {
-		return image.Config{}, err
-	}
-	defer f.Close()
-
-	config, _, err = image.DecodeConfig(f)
-	if err != nil {
+		config, _, err := ns.deps.ResourceSpec.Imaging.Codec.DecodeConfig(format, f)
 		return config, err
-	}
-
-	ns.cacheMu.Lock()
-	ns.cache[filename] = config
-	ns.cacheMu.Unlock()
-
-	return config, nil
+	})
 }
 
 // Filter applies the given filters to the image given as the last element in args.

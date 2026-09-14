@@ -8,7 +8,7 @@ aliases: [/hosting-and-deployment/deployment-with-rsync/]
 
 ## Assumptions
 
-- A web host running a web server. This could be a shared hosting environment or a VPS.
+- A web host running a web server. This could be a shared hosting environment or a VPS
 - Access to your web host with SSH
 - A functional static website built with Hugo
 
@@ -73,7 +73,7 @@ Now that you can log in with your SSH key, let's create a script to automate dep
 
 ## Shell script
 
-Create a new script called `deploy` the root of your Hugo tree:
+Create a new script called `deploy` at the root of your Hugo tree:
 
 ```txt
 ~/websites/topologix.fr$ editor deploy
@@ -87,7 +87,7 @@ USER=my-user
 HOST=my-server.com
 DIR=my/directory/to/topologix.fr/   # the directory where your website files should go
 
-hugo && rsync -avz --delete public/ ${USER}@${HOST}:~/${DIR} # this will delete everything on the server that's not in the local public directory 
+hugo build && rsync -avz --delete public/ ${USER}@${HOST}:~/${DIR} # this will delete everything on the server that's not in the local public directory
 
 exit 0
 ```

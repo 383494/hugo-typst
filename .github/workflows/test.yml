@@ -16,17 +16,15 @@ jobs:
   test:
     strategy:
       matrix:
-        go-version: [1.24.x, 1.25.x]
-        os: [ubuntu-latest, windows-latest] # macos disabled for now because of disk space issues.
+        go-version: [1.27.x]
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - if: matrix.os == 'ubuntu-latest'
         name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
-          # this might remove tools that are actually needed,
-          # if set to "true" but frees about 6 GB
-          tool-cache: false
+          tool-cache: true
           android: true
           dotnet: true
           haskell: true
@@ -34,40 +32,39 @@ jobs:
           docker-images: true
           swap-storage: true
       - name: Checkout code
-        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install Go
-        uses: actions/setup-go@0a12ed9d6a96ab950c8f026ed9f722fe0da7ef32 # v5.0.2
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version: ${{ matrix.go-version }}
           check-latest: true
           cache: true
-          cache-dependency-path: |
-            **/go.sum
-            **/go.mod
+      - name: Install Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
       - name: Install Ruby
-        uses: ruby/setup-ruby@44511735964dcb71245e7e55f72539531f7bc0eb # v1.257.0
+        uses: ruby/setup-ruby@7372622e62b60b3cb750dcd2b9e32c247ffec26a # v1.302.0
         with:
           ruby-version: "3.4.5"
-      - name: Install gems
+      - name: Install Ruby gems
         run: |
           gem install asciidoctor -v "2.0.26"
-          gem install asciidoctor-diagram -v "3.0.1"
-          gem install asciidoctor-diagram-plantuml -v "1.2025.3"
-      - name: Install Java # required by asciidoctor-diagram-plantuml
-        uses: actions/setup-java@dded0888837ed1f317902acf8a20df0ad188d165 # v5.0.0
-        with:
-          distribution: temurin
-          java-version: "25"
-          java-package: jre
+          gem install asciidoctor-diagram -v "3.1.0"
+          gem install asciidoctor-html5s -v "0.5.1"
+      - name: Install GoAT
+        run: go install github.com/blampe/goat/cmd/goat@177de93b192b8ffae608e5d9ec421cc99bf68402
       - name: Install Python
-        uses: actions/setup-python@39cd14951b08e74b54015e9e001cdefcf80e669f # v5.1.1
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.x"
       - name: Install Mage
         run: go install github.com/magefile/mage@v1.15.0
+      - name: Install gotmplfmt
+        run: go install github.com/gohugoio/gotmplfmt@latest
       - name: Install docutils
         run: |
-          pip install docutils
+          pip install docutils Pygments
           rst2html --version
       - if: matrix.os == 'ubuntu-latest'
         name: Install pandoc on Linux
@@ -112,8 +109,14 @@ jobs:
         name: Install staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
       - if: matrix.os == 'ubuntu-latest'
+        name: Check embedded go template formatting
+        run: "diff <(gotmplfmt -d tpl/tplimpl/embedded/templates) <(printf '')"
+      - if: matrix.os == 'ubuntu-latest'
         name: Run staticcheck
-        run: staticcheck ./...
+        run: |
+          export STATICCHECK_CACHE="${{ runner.temp }}/staticcheck"
+          staticcheck ./...
+          rm -rf ${{ runner.temp }}/staticcheck
       - if: matrix.os != 'windows-latest'
         name: Check
         run: |
@@ -125,16 +128,14 @@ jobs:
         # See issue #11052. We limit the build to regular test (no -race flag) on Windows for now.
         name: Test
         run: |
-          mage -v test;
+          mage -v test
         env:
           HUGO_BUILD_TAGS: extended,withdeploy
-      - name: Build tags
-        run: |
-          go install -tags extended
       - if: matrix.os == 'ubuntu-latest'
         name: Build for dragonfly
         run: |
           go install
+          go clean -i -cache
         env:
           GOARCH: amd64
           GOOS: dragonfly

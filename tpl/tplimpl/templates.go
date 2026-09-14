@@ -45,15 +45,31 @@ var embeddedTemplatesAliases = map[string][]string{
 	"_shortcodes/twitter.html": {"_shortcodes/tweet.html"},
 }
 
-func (s *TemplateStore) parseTemplate(ti *TemplInfo, replace bool) error {
-	err := s.tns.doParseTemplate(ti, replace)
+func (s *TemplateStore) parseTemplate(ti *TemplInfo) error {
+	err := s.tns.doParseTemplate(ti)
 	if err != nil {
 		return s.addFileContext(ti, "parse of template failed", err)
 	}
 	return err
 }
 
-func (t *templateNamespace) doParseTemplate(ti *TemplInfo, replace bool) error {
+func (t *templateNamespace) newBlankTemplate(ti *TemplInfo) tpl.Template {
+	if ti.D.IsPlainText {
+		tt, err := t.parseText.New(ti.Name()).Parse("")
+		if err != nil {
+			panic(err)
+		}
+		return tt
+
+	}
+	tt, err := t.parseHTML.New(ti.Name()).Parse("")
+	if err != nil {
+		panic(err)
+	}
+	return tt
+}
+
+func (t *templateNamespace) doParseTemplate(ti *TemplInfo) error {
 	if !ti.noBaseOf || ti.category == CategoryBaseof {
 		// Delay parsing until we have the base template.
 		return nil
@@ -68,7 +84,7 @@ func (t *templateNamespace) doParseTemplate(ti *TemplInfo, replace bool) error {
 
 	if ti.D.IsPlainText {
 		prototype := t.parseText
-		if !replace && prototype.Lookup(name) != nil {
+		if prototype.Lookup(name) != nil {
 			name += "-" + strconv.FormatUint(t.nameCounter.Add(1), 10)
 		}
 		templ, err = prototype.New(name).Parse(ti.content)
@@ -77,7 +93,7 @@ func (t *templateNamespace) doParseTemplate(ti *TemplInfo, replace bool) error {
 		}
 	} else {
 		prototype := t.parseHTML
-		if !replace && prototype.Lookup(name) != nil {
+		if prototype.Lookup(name) != nil {
 			name += "-" + strconv.FormatUint(t.nameCounter.Add(1), 10)
 		}
 		templ, err = prototype.New(name).Parse(ti.content)
@@ -169,6 +185,7 @@ func (t *templateNamespace) applyBaseTemplate(overlay *TemplInfo, base keyTempla
 		PathInfo: overlay.PathInfo,
 		Fi:       overlay.Fi,
 		D:        overlay.D,
+		matrix:   overlay.matrix,
 		noBaseOf: true,
 	}
 
@@ -200,63 +217,6 @@ func (t *templateNamespace) templatesIn(in tpl.Template) iter.Seq[tpl.Template] 
 		}
 	}
 }
-
-/*
-
-
-func (t *templateHandler) applyBaseTemplate(overlay, base templateInfo) (tpl.Template, error) {
-	if overlay.isText {
-		var (
-			templ = t.main.getPrototypeText(prototypeCloneIDBaseof).New(overlay.name)
-			err   error
-		)
-
-		if !base.IsZero() {
-			templ, err = templ.Parse(base.template)
-			if err != nil {
-				return nil, base.errWithFileContext("text: base: parse failed", err)
-			}
-		}
-
-		templ, err = texttemplate.Must(templ.Clone()).Parse(overlay.template)
-		if err != nil {
-			return nil, overlay.errWithFileContext("text: overlay: parse failed", err)
-		}
-
-		// The extra lookup is a workaround, see
-		// * https://github.com/golang/go/issues/16101
-		// * https://github.com/gohugoio/hugo/issues/2549
-		// templ = templ.Lookup(templ.Name())
-
-		return templ, nil
-	}
-
-	var (
-		templ = t.main.getPrototypeHTML(prototypeCloneIDBaseof).New(overlay.name)
-		err   error
-	)
-
-	if !base.IsZero() {
-		templ, err = templ.Parse(base.template)
-		if err != nil {
-			return nil, base.errWithFileContext("html: base: parse failed", err)
-		}
-	}
-
-	templ, err = htmltemplate.Must(templ.Clone()).Parse(overlay.template)
-	if err != nil {
-		return nil, overlay.errWithFileContext("html: overlay: parse failed", err)
-	}
-
-	// The extra lookup is a workaround, see
-	// * https://github.com/golang/go/issues/16101
-	// * https://github.com/gohugoio/hugo/issues/2549
-	templ = templ.Lookup(templ.Name())
-
-	return templ, err
-}
-
-*/
 
 var baseTemplateDefineRe = regexp.MustCompile(`^{{-?\s*define`)
 

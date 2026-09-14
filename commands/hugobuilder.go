@@ -31,10 +31,11 @@ import (
 	"github.com/bep/simplecobra"
 	"github.com/fsnotify/fsnotify"
 	"github.com/gohugoio/hugo/common/herrors"
+	"github.com/gohugoio/hugo/common/hmaps"
+	"github.com/gohugoio/hugo/common/hstrings"
 	"github.com/gohugoio/hugo/common/htime"
 	"github.com/gohugoio/hugo/common/hugo"
 	"github.com/gohugoio/hugo/common/loggers"
-	"github.com/gohugoio/hugo/common/maps"
 	"github.com/gohugoio/hugo/common/paths"
 	"github.com/gohugoio/hugo/common/terminal"
 	"github.com/gohugoio/hugo/common/types"
@@ -55,8 +56,9 @@ import (
 type hugoBuilder struct {
 	r *rootCommand
 
-	confmu sync.Mutex
-	conf   *commonConfig
+	confmu  sync.Mutex
+	confOld *commonConfig
+	conf    *commonConfig
 
 	// May be nil.
 	s *serverCommand
@@ -91,6 +93,27 @@ func (c *hugoBuilder) withConf(fn func(conf *commonConfig)) {
 	c.confmu.Lock()
 	defer c.confmu.Unlock()
 	fn(c.conf)
+}
+
+func (c *hugoBuilder) withConfOrOldConf(fn func(conf *commonConfig)) {
+	c.confmu.Lock()
+	defer c.confmu.Unlock()
+	if c.conf != nil {
+		fn(c.conf)
+	} else if c.confOld != nil {
+		fn(c.confOld)
+	}
+}
+
+func (c *hugoBuilder) withConfOrOldConfE(fn func(conf *commonConfig) error) error {
+	c.confmu.Lock()
+	defer c.confmu.Unlock()
+	if c.conf != nil {
+		return fn(c.conf)
+	} else if c.confOld != nil {
+		return fn(c.confOld)
+	}
+	return errConfigNotSet
 }
 
 type hugoBuilderErrState struct {
@@ -143,7 +166,7 @@ func (c *hugoBuilder) getDirList() ([]string, error) {
 		return nil, err
 	}
 
-	return helpers.UniqueStringsSorted(h.PathSpec.BaseFs.WatchFilenames()), nil
+	return hstrings.UniqueStringsSorted(h.PathSpec.BaseFs.WatchFilenames()), nil
 }
 
 func (c *hugoBuilder) initCPUProfile() (func(), error) {
@@ -156,6 +179,7 @@ func (c *hugoBuilder) initCPUProfile() (func(), error) {
 		return nil, fmt.Errorf("failed to create CPU profile: %w", err)
 	}
 	if err := pprof.StartCPUProfile(f); err != nil {
+		f.Close()
 		return nil, fmt.Errorf("failed to start CPU profile: %w", err)
 	}
 	return func() {
@@ -343,7 +367,7 @@ func (c *hugoBuilder) newWatcher(pollIntervalStr string, dirList ...string) (*wa
 			case changes := <-c.r.changesFromBuild:
 				unlock, err := h.LockBuild()
 				if err != nil {
-					c.r.logger.Errorln("Failed to acquire a build lock: %s", err)
+					c.r.logger.Errorf("Failed to acquire a build lock: %s", err)
 					return
 				}
 				c.changeDetector.PrepareNew()
@@ -363,7 +387,7 @@ func (c *hugoBuilder) newWatcher(pollIntervalStr string, dirList ...string) (*wa
 			case evs := <-watcher.Events:
 				unlock, err := h.LockBuild()
 				if err != nil {
-					c.r.logger.Errorln("Failed to acquire a build lock: %s", err)
+					c.r.logger.Errorf("Failed to acquire a build lock: %s", err)
 					return
 				}
 				c.handleEvents(watcher, staticSyncer, evs, configSet)
@@ -463,7 +487,15 @@ func (c *hugoBuilder) copyStaticTo(sourceFs *filesystems.SourceFilesystem) (uint
 		infol.Logf("removing all files from destination that don't exist in static dirs")
 
 		syncer.DeleteFilter = func(f fsync.FileInfo) bool {
-			return f.IsDir() && strings.HasPrefix(f.Name(), ".")
+			name := f.Name()
+
+			// Keep .gitignore and .gitattributes anywhere
+			if name == ".gitignore" || name == ".gitattributes" {
+				return true
+			}
+
+			// Keep Hugo's original dot-directory behavior
+			return f.IsDir() && strings.HasPrefix(name, ".")
 		}
 	}
 	start := time.Now()
@@ -827,7 +859,7 @@ func (c *hugoBuilder) handleEvents(watcher *watcher.Batcher,
 			continue
 		}
 
-		walkAdder := func(path string, f hugofs.FileMetaInfo) error {
+		walkAdder := func(ctx context.Context, path string, f hugofs.FileMetaInfo) error {
 			if f.IsDir() {
 				c.r.logger.Println("adding created directory to watchlist", path)
 				if err := watcher.Add(path); err != nil {
@@ -1050,25 +1082,11 @@ func (c *hugoBuilder) loadConfig(cd *simplecobra.Commandeer, running bool) error
 	cfg := config.New()
 	cfg.Set("renderToMemory", c.r.renderToMemory)
 	watch := c.r.buildWatch || (c.s != nil && c.s.serverWatch)
-	if c.r.environment == "" {
-		// We need to set the environment as early as possible because we need it to load the correct config.
-		// Check if the user has set it in env.
-		if env := os.Getenv("HUGO_ENVIRONMENT"); env != "" {
-			c.r.environment = env
-		} else if env := os.Getenv("HUGO_ENV"); env != "" {
-			c.r.environment = env
-		} else {
-			if c.s != nil {
-				// The server defaults to development.
-				c.r.environment = hugo.EnvironmentDevelopment
-			} else {
-				c.r.environment = hugo.EnvironmentProduction
-			}
-		}
-	}
+	// We need to set the environment as early as possible because we need it to load the correct config.
+	c.r.resolveEnvironment(c.s != nil)
 	cfg.Set("environment", c.r.environment)
 
-	cfg.Set("internal", maps.Params{
+	cfg.Set("internal", hmaps.Params{
 		"running":        running,
 		"watch":          watch,
 		"verbose":        c.r.isVerbose(),
@@ -1082,10 +1100,11 @@ func (c *hugoBuilder) loadConfig(cd *simplecobra.Commandeer, running bool) error
 
 	if len(conf.configs.LoadingInfo.ConfigFiles) == 0 {
 		//lint:ignore ST1005 end user message.
-		return errors.New("Unable to locate config file or config directory. Perhaps you need to create a new site.\nRun `hugo help new` for details.")
+		return errors.New("Unable to locate config file or config directory. Perhaps you need to create a new project.\nRun `hugo help new` for details.")
 	}
 
 	c.conf = conf
+	c.confOld = conf
 	if c.onConfigLoaded != nil {
 		if err := c.onConfigLoaded(false); err != nil {
 			return err
@@ -1149,8 +1168,9 @@ func (c *hugoBuilder) reloadConfig() error {
 	c.r.resetLogs()
 	c.r.configVersionID.Add(1)
 
-	if err := c.withConfE(func(conf *commonConfig) error {
+	if err := c.withConfOrOldConfE(func(conf *commonConfig) error {
 		oldConf := conf
+		c.conf = nil
 		newConf, err := c.r.ConfigFromConfig(configKey{counter: c.r.configVersionID.Load()}, conf)
 		if err != nil {
 			return err

@@ -84,3 +84,66 @@ foo theme.
 	b = runFiles(files)
 	b.AssertFileContent("public/index.html", "Foo: foo theme.")
 }
+
+func TestMultipleMountsOfTheSameContentDirectoryIssue13818(t *testing.T) {
+	files := `
+-- hugo.toml --
+
+[[module.mounts]]
+source = 'shared/tutorials'
+target = 'content/product1/tutorials'
+
+[[module.mounts]]
+source = 'shared/tutorials'
+target = 'content/product2/tutorials'
+
+-- shared/tutorials/tutorial1.md --
+---
+title: "Tutorial 1"
+---
+-- shared/tutorials/tutorial2.md --
+---
+title: "Tutorial 2"
+---
+-- layouts/all.html --
+Title: {{ .Title }}|
+
+`
+	b := hugolib.Test(t, files)
+
+	b.AssertPublishDir(`
+product1/tutorials/tutorial1/index.html
+product1/tutorials/tutorial2/index.html
+product2/tutorials/tutorial1/index.html
+product2/tutorials/tutorial2/index.html
+`)
+}
+
+func TestContentDirPerLangNoDeprecationPleaseIssue14287(t *testing.T) {
+	files := `
+-- hugo.toml --
+defaultContentLanguage = "en"
+defaultContentLanguageInSubdir = true
+[languages]
+[languages.en]
+contentDir = "content/en"
+[languages.fr]
+contentDir = "content/fr"
+-- content/en/page.md --
+---
+title: "English Page"
+---
+-- content/fr/page.md --
+---
+title: "Page Française"
+---
+-- layouts/all.html --
+Title: {{ .Title }}|
+-- 
+`
+	b := hugolib.Test(t, files, hugolib.TestOptInfo())
+
+	b.AssertFileContent("public/en/page/index.html", "Title: English Page|")
+	b.AssertFileContent("public/fr/page/index.html", "Title: Page Française|")
+	b.AssertLogContains("! deprecated")
+}

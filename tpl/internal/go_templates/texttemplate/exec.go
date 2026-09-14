@@ -333,7 +333,7 @@ func isTrueOld(val reflect.Value) (truth, ok bool) {
 		truth = val.Bool()
 	case reflect.Complex64, reflect.Complex128:
 		truth = val.Complex() != 0
-	case reflect.Chan, reflect.Func, reflect.Pointer, reflect.Interface:
+	case reflect.Chan, reflect.Func, reflect.Pointer, reflect.UnsafePointer, reflect.Interface:
 		truth = !val.IsNil()
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		truth = val.Int() != 0
@@ -495,7 +495,7 @@ func (s *state) walkRange(dot reflect.Value, r *parse.RangeNode) {
 	}
 }
 
-func (s *state) walkTemplate(dot reflect.Value, t *parse.TemplateNode) {
+func (s *state) walkTemplateOld(dot reflect.Value, t *parse.TemplateNode) {
 	s.at(t)
 	tmpl := s.tmpl.Lookup(t.Name)
 	if tmpl == nil {

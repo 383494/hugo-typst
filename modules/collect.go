@@ -15,6 +15,7 @@ package modules
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -22,20 +23,21 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/bep/debounce"
+	"github.com/gobwas/glob"
 	"github.com/gohugoio/hugo/common/herrors"
+	"github.com/gohugoio/hugo/common/hmaps"
 	"github.com/gohugoio/hugo/common/loggers"
 	"github.com/gohugoio/hugo/common/paths"
+	"github.com/gohugoio/hugo/common/version"
 	"golang.org/x/mod/module"
 
 	"github.com/spf13/cast"
 
-	"github.com/gohugoio/hugo/common/maps"
-
-	"github.com/gohugoio/hugo/common/hugo"
 	"github.com/gohugoio/hugo/parser/metadecoders"
 
 	"github.com/gohugoio/hugo/hugofs/files"
@@ -64,7 +66,7 @@ func (h *Client) Collect() (ModulesConfig, error) {
 		}
 	}
 
-	if err := (&mc).finalize(h.logger); err != nil {
+	if err := (&mc).finalize(); err != nil {
 		return mc, err
 	}
 
@@ -134,25 +136,28 @@ func (m *ModulesConfig) setActiveMods(logger loggers.Logger) error {
 	return nil
 }
 
-func (m *ModulesConfig) finalize(logger loggers.Logger) error {
+func (m *ModulesConfig) finalize() error {
 	for _, mod := range m.AllModules {
 		m := mod.(*moduleAdapter)
-		m.mounts = filterUnwantedMounts(m.mounts)
+		m.mounts = filterDuplicateMounts(m.mounts)
 	}
 	return nil
 }
 
-func filterUnwantedMounts(mounts []Mount) []Mount {
-	// Remove duplicates
-	seen := make(map[string]bool)
-	tmp := mounts[:0]
-	for _, m := range mounts {
-		if !seen[m.key()] {
-			tmp = append(tmp, m)
+// filterDuplicateMounts removes duplicate mounts while preserving order.
+// The input slice will not be modified.
+func filterDuplicateMounts(mounts []Mount) []Mount {
+	var x []Mount
+	for _, m1 := range mounts {
+		var found bool
+		if slices.ContainsFunc(x, m1.Equal) {
+			found = true
 		}
-		seen[m.key()] = true
+		if !found {
+			x = append(x, m1)
+		}
 	}
-	return tmp
+	return x
 }
 
 type pathVersionKey struct {
@@ -388,14 +393,11 @@ func (c *collector) addAndRecurse(owner *moduleAdapter) error {
 		pk := pathVersionKey{path: tc.Path(), version: tc.Version()}
 		seenInCurrent := seen[pk]
 		if seenInCurrent {
-			// Only one import of the same module per project.
-			if owner.projectMod {
-				// In Hugo v0.150.0 we introduced direct dependencies, and it may be tempting to import the same version
-				// with different mount setups. We may allow that in the future, but we need to get some experience first.
-				// For now, we just warn. The user needs to add multiple mount points in the same import.
-				c.logger.Warnf("module with path %q is imported for the same version %q more than once", tc.Path(), tc.Version())
+			// Only one import of the same module per project, unless this is the main project.
+			if !owner.projectMod {
+				c.logger.Warnf("module with path %q is imported for the same version %q more than once; this is currently only allowed in the main project's config.", tc.Path(), tc.Version())
+				continue
 			}
-			continue
 		}
 		seen[pk] = true
 
@@ -490,7 +492,7 @@ LOOP:
 		if err != nil {
 			c.logger.Warnf("Failed to read module config for %q in %q: %s", tc.Path(), themeTOML, err)
 		} else {
-			maps.PrepareParams(themeCfg)
+			hmaps.PrepareParams(themeCfg)
 		}
 	}
 
@@ -525,7 +527,7 @@ LOOP:
 		}
 	}
 
-	config, err := decodeConfig(tc.cfg, c.moduleConfig.replacementsMap)
+	config, err := decodeConfig(c.logger.Logger(), tc.cfg, c.moduleConfig.replacementsMap)
 	if err != nil {
 		return err
 	}
@@ -537,7 +539,7 @@ LOOP:
 		// Merge old with new
 		if minVersion, found := themeCfg[oldVersionKey]; found {
 			if config.HugoVersion.Min == "" {
-				config.HugoVersion.Min = hugo.VersionString(cast.ToString(minVersion))
+				config.HugoVersion.Min = version.VersionString(cast.ToString(minVersion))
 			}
 		}
 
@@ -654,7 +656,7 @@ func (c *collector) loadModules() error {
 }
 
 // Matches postcss.config.js etc.
-var commonJSConfigs = regexp.MustCompile(`(babel|postcss|tailwind)\.config\.js`)
+var commonJSConfigs = regexp.MustCompile(`^(babel|postcss|tailwind)\.config\.(c|m)?js$`)
 
 func (c *collector) mountCommonJSConfig(owner *moduleAdapter, mounts []Mount) ([]Mount, error) {
 	for _, m := range mounts {
@@ -677,10 +679,18 @@ func (c *collector) mountCommonJSConfig(owner *moduleAdapter, mounts []Mount) ([
 		return mounts, fmt.Errorf("failed to read dir %q: %q", owner.Dir(), err)
 	}
 
+	hasPackageHugoJSON := false
+	for _, fi := range fis {
+		if fi.Name() == files.FilenamePackageHugoJSON {
+			hasPackageHugoJSON = true
+			break
+		}
+	}
+
 	for _, fi := range fis {
 		n := fi.Name()
 
-		should := n == files.FilenamePackageHugoJSON || n == files.FilenamePackageJSON
+		should := n == files.FilenamePackageHugoJSON || (n == files.FilenamePackageJSON && !hasPackageHugoJSON)
 		should = should || commonJSConfigs.MatchString(n)
 
 		if should {
@@ -692,7 +702,78 @@ func (c *collector) mountCommonJSConfig(owner *moduleAdapter, mounts []Mount) ([
 
 	}
 
+	// Mount the project's hugoautogen workspace package.json (not from dependencies).
+	if owner.projectMod {
+		pkgAutoGen := filepath.Join(files.FolderPackagesHugoAutoGen, files.FilenamePackageJSON)
+		if fi, err := c.fs.Stat(filepath.Join(owner.Dir(), pkgAutoGen)); err == nil && !fi.IsDir() {
+			mounts = append(mounts, Mount{
+				Source: pkgAutoGen,
+				Target: filepath.Join(files.ComponentFolderAssets, files.FolderJSConfig, pkgAutoGen),
+			})
+		}
+	}
+
+	// Mount workspace package.json files (skipping hugoautogen from dependencies).
+	// Read workspaces from package.hugo.json if it exists, otherwise from package.json.
+	pkgFile := files.FilenamePackageJSON
+	if hasPackageHugoJSON {
+		pkgFile = files.FilenamePackageHugoJSON
+	}
+	if pkgData, err := afero.ReadFile(c.fs, filepath.Join(owner.Dir(), pkgFile)); err == nil {
+		var pkg map[string]any
+		if err := json.Unmarshal(pkgData, &pkg); err == nil {
+			for _, ws := range cast.ToStringSlice(pkg["workspaces"]) {
+				wsDirs := ResolveWorkspacePattern(c.fs, owner.Dir(), ws)
+				for _, wsDir := range wsDirs {
+					if filepath.ToSlash(wsDir) == filepath.ToSlash(files.FolderPackagesHugoAutoGen) {
+						continue
+					}
+					wsPackageJSON := filepath.Join(wsDir, files.FilenamePackageJSON)
+					if fi, err := c.fs.Stat(filepath.Join(owner.Dir(), wsPackageJSON)); err == nil && !fi.IsDir() {
+						mounts = append(mounts, Mount{
+							Source: wsPackageJSON,
+							Target: filepath.Join(files.ComponentFolderAssets, files.FolderJSConfig, wsPackageJSON),
+						})
+					}
+				}
+			}
+		}
+	}
+
 	return mounts, nil
+}
+
+// ResolveWorkspacePattern resolves an npm workspace pattern to actual directory paths.
+// Supports globs (*, **) and brace expansion ({a,b}) via gobwas/glob.
+// Literal paths are returned as-is.
+func ResolveWorkspacePattern(fs afero.Fs, root, pattern string) []string {
+	if !strings.ContainsAny(pattern, "*?[{}") {
+		return []string{pattern}
+	}
+
+	g, err := glob.Compile(pattern, '/')
+	if err != nil {
+		return nil
+	}
+
+	var dirs []string
+	_ = afero.Walk(fs, root, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		if info.Name() != files.FilenamePackageJSON {
+			return nil
+		}
+		rel, err := filepath.Rel(root, filepath.Dir(path))
+		if err != nil {
+			return nil
+		}
+		if g.Match(filepath.ToSlash(rel)) {
+			dirs = append(dirs, rel)
+		}
+		return nil
+	})
+	return dirs
 }
 
 func (c *collector) nodeModulesRoot(s string) string {
@@ -788,6 +869,10 @@ func (c *collector) normalizeMounts(owner *moduleAdapter, mounts []Mount) ([]Mou
 		}
 		if !files.IsComponentFolder(targetBase) {
 			return nil, fmt.Errorf("%s: mount target must be one of: %v", errMsg, files.ComponentFolders)
+		}
+
+		if err := mnt.init(c.logger.Logger()); err != nil {
+			return nil, fmt.Errorf("%s: %w", errMsg, err)
 		}
 
 		out = append(out, mnt)

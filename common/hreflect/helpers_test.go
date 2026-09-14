@@ -152,17 +152,18 @@ func TestIndirectInterface(t *testing.T) {
 }
 
 func BenchmarkIsContextType(b *testing.B) {
+	const size = 1000
 	type k string
 	b.Run("value", func(b *testing.B) {
 		ctx := context.Background()
-		ctxs := make([]reflect.Type, b.N)
-		for i := 0; i < b.N; i++ {
+		ctxs := make([]reflect.Type, size)
+		for i := range size {
 			ctxs[i] = reflect.TypeOf(context.WithValue(ctx, k("key"), i))
 		}
 
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			if !IsContextType(ctxs[i]) {
+		for i := 0; b.Loop(); i++ {
+			idx := i % size
+			if !IsContextType(ctxs[idx]) {
 				b.Fatal("not context")
 			}
 		}
@@ -170,7 +171,7 @@ func BenchmarkIsContextType(b *testing.B) {
 
 	b.Run("background", func(b *testing.B) {
 		var ctxt reflect.Type = reflect.TypeOf(context.Background())
-		for i := 0; i < b.N; i++ {
+		for b.Loop() {
 			if !IsContextType(ctxt) {
 				b.Fatal("not context")
 			}
@@ -189,8 +190,7 @@ func BenchmarkIsTruthFulValue(b *testing.B) {
 		nilPointer  = reflect.ValueOf((*zeroStruct)(nil))
 	)
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		IsTruthfulValue(stringHugo)
 		IsTruthfulValue(stringEmpty)
 		IsTruthfulValue(zero)
@@ -227,8 +227,7 @@ func BenchmarkGetMethodByNameForType(b *testing.B) {
 	tp := reflect.TypeFor[*testStruct]()
 	methods := []string{"Method1", "Method2", "Method3", "Method4", "Method5"}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for _, method := range methods {
 			_ = GetMethodByNameForType(tp, method)
 		}
@@ -239,8 +238,7 @@ func BenchmarkGetMethodByName(b *testing.B) {
 	v := reflect.ValueOf(&testStruct{})
 	methods := []string{"Method1", "Method2", "Method3", "Method4", "Method5"}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		for _, method := range methods {
 			_ = GetMethodByName(v, method)
 		}
